@@ -42,6 +42,14 @@ public:
 	 */
 	static TArray<TSharedPtr<FJsonValue>> SerializeConnections(UEdGraph* Graph);
 
+	/**
+	 * Convert JSON object to string for output/logging
+	 * @param JsonObject The JSON object to convert
+	 * @param bPrettyPrint Whether to format the JSON nicely
+	 * @return JSON string representation
+	 */
+	static FString JsonToString(const TSharedPtr<FJsonObject>& JsonObject, bool bPrettyPrint = true);
+
 private:
 	/**
 	 * Generate a unique ID for a node

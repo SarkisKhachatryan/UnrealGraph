@@ -16,11 +16,28 @@ public:
 	virtual void ShutdownModule() override;
 
 private:
-	/** Handle to the menu extension */
-	TSharedPtr<class FExtensibilityManager> MenuExtensibilityManager;
-	TSharedPtr<class FExtensibilityManager> ToolBarExtensibilityManager;
+	/** Command list for menu actions */
+	TSharedPtr<class FUICommandList> CommandList;
 
 	/** Register editor commands and menus */
 	void RegisterMenus();
+
+	/** Register console commands for testing */
+	void RegisterConsoleCommands();
+	
+	/** Test serialization function */
+	void TestSerialization();
+
+	/** Register Blueprint editor menus */
+	void RegisterBlueprintEditorMenus();
+	
+	/** Handler for Copy as JSON */
+	void OnCopyAsJSON();
+	
+	/** Handler for Paste from JSON */
+	void OnPasteFromJSON();
+	
+	/** Get the currently focused Blueprint graph */
+	UEdGraph* GetFocusedBlueprintGraph() const;
 };
 

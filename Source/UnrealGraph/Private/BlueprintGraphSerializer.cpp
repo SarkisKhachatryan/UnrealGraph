@@ -10,6 +10,8 @@
 #include "HAL/Platform.h"
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 TSharedPtr<FJsonObject> FBlueprintGraphSerializer::SerializeGraph(UEdGraph* Graph)
 {
@@ -68,20 +70,24 @@ TSharedPtr<FJsonObject> FBlueprintGraphSerializer::SerializeNode(UEdGraphNode* N
 	NodeObject->SetStringField(TEXT("type"), GetNodeClassName(Node));
 	NodeObject->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 
-	// Position - TODO: Fix NodePos access (temporarily set to 0,0)
-	// The NodePos property access method varies by UE version
+	// Position - TODO: Fix NodePos access (temporarily default to 0,0)
+	// NodePos property access varies by UE version - will implement proper solution
 	TSharedPtr<FJsonObject> PositionObject = MakeShareable(new FJsonObject);
 	FVector2D NodePosition(0.0f, 0.0f);
-	
-	// Try to get position - will implement properly once we know UE version
-	// For now, default to (0,0) to allow compilation
 	PositionObject->SetNumberField(TEXT("x"), static_cast<double>(NodePosition.X));
 	PositionObject->SetNumberField(TEXT("y"), static_cast<double>(NodePosition.Y));
 	NodeObject->SetObjectField(TEXT("position"), PositionObject);
 
-	// Comment - Temporarily disabled to fix compilation error
-	// TODO: Fix NodeComment serialization - type resolution issue needs investigation
-	// The error suggests NodeComment type may differ by UE version
+	// Comment - Serialize node comment (NodeComment is FText)
+	// Temporarily skip comment serialization - will fix type conversion later
+	// if (!Node->NodeComment.IsEmpty())
+	// {
+	// 	FString CommentString = Node->NodeComment.ToString();
+	// 	if (!CommentString.IsEmpty())
+	// 	{
+	// 		NodeObject->SetStringField(TEXT("comment"), CommentString);
+	// 	}
+	// }
 
 	// Serialize pins
 	TArray<TSharedPtr<FJsonValue>> PinsArray;
@@ -221,5 +227,21 @@ FString FBlueprintGraphSerializer::GetNodeClassName(UEdGraphNode* Node)
 	}
 
 	return Node->GetClass()->GetName();
+}
+
+FString FBlueprintGraphSerializer::JsonToString(const TSharedPtr<FJsonObject>& JsonObject, bool bPrettyPrint)
+{
+	if (!JsonObject.IsValid())
+	{
+		return FString();
+	}
+
+	FString OutputString;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+	FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+
+	// If pretty printing is needed, we can format manually or use a different writer
+	// For now, return the basic serialization
+	return OutputString;
 }
 

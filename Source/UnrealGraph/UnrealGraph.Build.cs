@@ -43,7 +43,8 @@ public class UnrealGraph : ModuleRules
 				"PropertyEditor",
 				"EditorSubsystem",
 				"InputCore",
-				"Projects"
+				"Projects",
+				"ApplicationCore"
 			}
 		);
 		
