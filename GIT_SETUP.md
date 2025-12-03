@@ -26,7 +26,7 @@ To push this repository to a remote (GitHub, GitLab, etc.), you need to:
 
 4. **Push to remote**:
    ```bash
-   git push -u origin main
+   git push -u origin master
    ```
 
 ### Option 2: If you already have a remote repository
@@ -38,7 +38,7 @@ To push this repository to a remote (GitHub, GitLab, etc.), you need to:
 
 2. **Push to remote**:
    ```bash
-   git push -u origin main
+   git push -u origin master
    ```
 
 ## Windows Setup
