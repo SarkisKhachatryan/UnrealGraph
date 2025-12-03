@@ -2,6 +2,10 @@
 
 A Unreal Engine plugin that enables copying Blueprint graphs as JSON and pasting them back into the editor.
 
+## Quick Start
+
+For documentation and setup instructions, see the `Docs/` folder.
+
 ## Overview
 
 Unreal Graph allows developers to:
@@ -9,22 +13,11 @@ Unreal Graph allows developers to:
 - **Store** Blueprint graphs in JSON for version control, sharing, or external processing
 - **Paste** JSON back into Unreal Editor to reconstruct the Blueprint graph
 
-## Features (Planned)
-
-- ✅ Copy Blueprint graph to JSON (via context menu or keyboard shortcut)
-- ✅ Paste JSON to recreate Blueprint graph
-- ✅ Preserve node positions and layout
-- ✅ Support for various node types (Events, Functions, Variables, etc.)
-- ✅ Handle connections between nodes
-- ✅ Support for comments and annotations
-- ✅ Clipboard integration
-- ✅ Version management for JSON schema
-
 ## Status
 
-🚧 **Project Status**: Planning Phase
+🚧 **Project Status**: Implementation in Progress
 
-This project is currently in the planning and research phase. See [ROADMAP.md](./ROADMAP.md) for detailed development plans.
+The plugin is currently under active development.
 
 ## Requirements
 
@@ -34,19 +27,15 @@ This project is currently in the planning and research phase. See [ROADMAP.md](.
 
 ## Installation
 
-*Installation instructions will be added once the plugin is developed.*
+Copy this plugin to your project's `Plugins` folder and enable it in the Unreal Editor.
 
-## Usage
+## Documentation
 
-*Usage instructions will be added once the plugin is developed.*
-
-## Development
-
-See [ROADMAP.md](./ROADMAP.md) for the complete development roadmap and technical details.
-
-## Contributing
-
-Contributions are welcome! Please see the roadmap for areas where help is needed.
+All documentation is available in the `Docs/` folder:
+- Setup and testing guides
+- Technical research
+- Development roadmap
+- Project structure
 
 ## License
 

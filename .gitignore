@@ -1,86 +1,77 @@
+# Visual Studio 2015/2017/2019/2022 user specific files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Visual Studio Code
+.vscode/
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
 # Unreal Engine
 Binaries/
 Intermediate/
 Saved/
 DerivedDataCache/
-*.sln
-*.suo
 *.sdf
 *.opensdf
 *.db
 *.opendb
-
-# Visual Studio
-.vs/
-*.user
-*.userosscache
-*.aps
-*.pch
-*.vspscc
-*.vssscc
-build/
-*.bsc
-*.obj
-*.pdb
-*.ilk
-*.meta
-*.exp
-*.lib
-*.log
-*.tlb
-*.tlh
 *.tmp
-*.tmp_proj
-*.vspscc
-*.vssscc
-*.sdf
-*.opensdf
-*.suo
-*.user
-*.userosscache
-*.userprefs
-*.pidb
-*.booproj
-*.svd
-*.pdb
-*.opendb
-*.VC.db
-
-# Rider
-.idea/
-*.iml
-*.ipr
-*.iws
-
-# Build artifacts
-*.obj
-*.pch
-*.pdb
-*.ilk
-*.meta
-*.exp
-*.lib
+*.tmp.*
 *.log
-*.tlb
-*.tlh
-*.tmp
-*.tmp_proj
-*.vspscc
-*.vssscc
-*.sdf
-*.opensdf
-*.suo
-*.user
-*.userosscache
-*.userprefs
-*.pidb
-*.booproj
-*.svd
-*.pdb
-*.opendb
-*.VC.db
 
-# OS
+# Builds
+Build/
+Builds/
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# OS files
 .DS_Store
 .DS_Store?
 ._*
@@ -90,36 +81,5 @@ ehthumbs.db
 Thumbs.db
 Desktop.ini
 
-# Editor specific
-*.uasset
-*.umap
-!Content/**/*.uasset
-!Content/**/*.umap
-
-# Temporary files
-*.tmp
-*.temp
-*.bak
-*.swp
-*~
-.#*
-
-# Logs
-*.log
-
-# Compiled files
-*.dll
-*.exe
-*.so
-*.dylib
-
-# Package files
-*.7z
-*.dmg
-*.gz
-*.iso
-*.jar
-*.rar
-*.tar
-*.zip
-
+# Documentation folder
+Docs/
