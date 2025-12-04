@@ -629,6 +629,8 @@ bool FBlueprintGraphDeserializer::ConfigureNodeProperties(UEdGraphNode* Node, co
 	}
 	else if (NodeType == TEXT("K2Node_VariableGet"))
 	{
+		FUnrealGraphLogger::LogSection(FString::Printf(TEXT("Configuring VariableGet Node: %s"), *Title));
+		
 		// Extract variable name from title (e.g., "Get In String" -> "In String")
 		FString VariableName = Title;
 		if (VariableName.StartsWith(TEXT("Get ")))
@@ -636,17 +638,278 @@ bool FBlueprintGraphDeserializer::ConfigureNodeProperties(UEdGraphNode* Node, co
 			VariableName = VariableName.RightChop(4); // Remove "Get "
 		}
 
-		// Try explicit variableName in JSON
+		// Try explicit variableName in JSON (preferred method)
 		FString ExplicitVariableName;
 		if (NodeData->TryGetStringField(TEXT("variableName"), ExplicitVariableName))
 		{
 			VariableName = ExplicitVariableName;
+			FUnrealGraphLogger::LogFormatted(TEXT("  Using explicit variableName from JSON: %s"), *VariableName);
+		}
+		else
+		{
+			FUnrealGraphLogger::LogFormatted(TEXT("  Extracted variable name from title: %s"), *VariableName);
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Need to configure VariableGet node with variable: %s (from title: %s)"), *VariableName, *Title);
+		if (VariableName.IsEmpty())
+		{
+			FUnrealGraphLogger::Log(TEXT("  ✗ ERROR: Variable name is empty"));
+			UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Variable name is empty for VariableGet node"));
+			return false;
+		}
+
+		FName VariableNameAsFName = *VariableName;
+		FUnrealGraphLogger::LogFormatted(TEXT("  Searching for variable: %s"), *VariableName);
+
+		// Find the variable property in the Blueprint
+		FProperty* VariableProperty = nullptr;
+		UClass* VariableOwnerClass = nullptr;
+
+		// First, try to find in the Blueprint's GeneratedClass (fully compiled)
+		if (Blueprint->GeneratedClass)
+		{
+			VariableProperty = Blueprint->GeneratedClass->FindPropertyByName(VariableNameAsFName);
+			if (VariableProperty)
+			{
+				VariableOwnerClass = Blueprint->GeneratedClass;
+				FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable in GeneratedClass: %s"), *Blueprint->GeneratedClass->GetName());
+			}
+		}
+
+		// If not found, try SkeletonClass (available earlier in compilation)
+		if (!VariableProperty && Blueprint->SkeletonGeneratedClass)
+		{
+			VariableProperty = Blueprint->SkeletonGeneratedClass->FindPropertyByName(VariableNameAsFName);
+			if (VariableProperty)
+			{
+				VariableOwnerClass = Blueprint->SkeletonGeneratedClass;
+				FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable in SkeletonGeneratedClass: %s"), *Blueprint->SkeletonGeneratedClass->GetName());
+			}
+		}
+
+		// If still not found, try searching in parent classes
+		if (!VariableProperty)
+		{
+			UClass* ParentClass = Blueprint->ParentClass;
+			if (ParentClass)
+			{
+				// Search through the class hierarchy
+				for (UClass* Class = ParentClass; Class; Class = Class->GetSuperClass())
+				{
+					VariableProperty = Class->FindPropertyByName(VariableNameAsFName);
+					if (VariableProperty)
+					{
+						VariableOwnerClass = Class;
+						FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable in parent class: %s"), *Class->GetName());
+						break;
+					}
+				}
+			}
+		}
+
+		// If still not found, search through all properties in the Blueprint class hierarchy
+		if (!VariableProperty)
+		{
+			UClass* SearchClass = Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass;
+			if (SearchClass)
+			{
+				// Iterate through all properties, including super class properties
+				for (UClass* Class = SearchClass; Class && !VariableProperty; Class = Class->GetSuperClass())
+				{
+					for (TFieldIterator<FProperty> PropIt(Class); PropIt; ++PropIt)
+					{
+						FProperty* TestProp = *PropIt;
+						if (TestProp && TestProp->GetFName() == VariableNameAsFName)
+						{
+							VariableProperty = TestProp;
+							VariableOwnerClass = Class;
+							FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable via property iteration in class %s: %s"), *Class->GetName(), *TestProp->GetName());
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		if (!VariableProperty || !VariableOwnerClass)
+		{
+			FUnrealGraphLogger::LogFormatted(TEXT("  ✗ ERROR: Could not find variable '%s' in Blueprint '%s'"), *VariableName, Blueprint ? *Blueprint->GetName() : TEXT("None"));
+			UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Could not find variable '%s' in Blueprint"), *VariableName);
+			return false;
+		}
+
+		// Set the VariableReference struct using reflection (similar to FunctionReference)
+		FStructProperty* VariableRefProp = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("VariableReference")));
+		if (VariableRefProp && VariableRefProp->Struct)
+		{
+			// Get pointer to VariableReference struct
+			void* VariableRefPtr = VariableRefProp->ContainerPtrToValuePtr<void>(Node);
+			if (VariableRefPtr)
+			{
+				// Set MemberName (the variable name)
+				if (FNameProperty* MemberNameProp = CastField<FNameProperty>(VariableRefProp->Struct->FindPropertyByName(TEXT("MemberName"))))
+				{
+					MemberNameProp->SetPropertyValue_InContainer(VariableRefPtr, VariableNameAsFName);
+					FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Set VariableReference.MemberName = %s"), *VariableName);
+				}
+
+				// Set MemberParent (the class that contains the variable)
+				if (FObjectProperty* MemberParentProp = CastField<FObjectProperty>(VariableRefProp->Struct->FindPropertyByName(TEXT("MemberParent"))))
+				{
+					MemberParentProp->SetObjectPropertyValue_InContainer(VariableRefPtr, VariableOwnerClass);
+					FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Set VariableReference.MemberParent = %s"), VariableOwnerClass ? *VariableOwnerClass->GetName() : TEXT("None"));
+				}
+
+				FUnrealGraphLogger::LogFormatted(TEXT("  ✓ SUCCESS: VariableReference configured for variable '%s'"), *VariableName);
+				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Set VariableReference for variable '%s' in class '%s'"), *VariableName, VariableOwnerClass ? *VariableOwnerClass->GetName() : TEXT("None"));
+				return true;
+			}
+		}
+
+		FUnrealGraphLogger::Log(TEXT("  ✗ ERROR: Could not set VariableReference property on node"));
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Could not set VariableReference property on VariableGet node"));
+		return false;
+	}
+	else if (NodeType == TEXT("K2Node_VariableSet"))
+	{
+		FUnrealGraphLogger::LogSection(FString::Printf(TEXT("Configuring VariableSet Node: %s"), *Title));
 		
-		// TODO: Find variable in Blueprint and set it on the node
-		return true;
+		// Extract variable name from title (e.g., "Set In String" -> "In String")
+		FString VariableName = Title;
+		if (VariableName.StartsWith(TEXT("Set ")))
+		{
+			VariableName = VariableName.RightChop(4); // Remove "Set "
+		}
+
+		// Try explicit variableName in JSON (preferred method)
+		FString ExplicitVariableName;
+		if (NodeData->TryGetStringField(TEXT("variableName"), ExplicitVariableName))
+		{
+			VariableName = ExplicitVariableName;
+			FUnrealGraphLogger::LogFormatted(TEXT("  Using explicit variableName from JSON: %s"), *VariableName);
+		}
+		else
+		{
+			FUnrealGraphLogger::LogFormatted(TEXT("  Extracted variable name from title: %s"), *VariableName);
+		}
+
+		if (VariableName.IsEmpty())
+		{
+			FUnrealGraphLogger::Log(TEXT("  ✗ ERROR: Variable name is empty"));
+			UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Variable name is empty for VariableSet node"));
+			return false;
+		}
+
+		FName VariableNameAsFName = *VariableName;
+		FUnrealGraphLogger::LogFormatted(TEXT("  Searching for variable: %s"), *VariableName);
+
+		// Find the variable property in the Blueprint (same logic as VariableGet)
+		FProperty* VariableProperty = nullptr;
+		UClass* VariableOwnerClass = nullptr;
+
+		// First, try to find in the Blueprint's GeneratedClass (fully compiled)
+		if (Blueprint->GeneratedClass)
+		{
+			VariableProperty = Blueprint->GeneratedClass->FindPropertyByName(VariableNameAsFName);
+			if (VariableProperty)
+			{
+				VariableOwnerClass = Blueprint->GeneratedClass;
+				FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable in GeneratedClass: %s"), *Blueprint->GeneratedClass->GetName());
+			}
+		}
+
+		// If not found, try SkeletonClass (available earlier in compilation)
+		if (!VariableProperty && Blueprint->SkeletonGeneratedClass)
+		{
+			VariableProperty = Blueprint->SkeletonGeneratedClass->FindPropertyByName(VariableNameAsFName);
+			if (VariableProperty)
+			{
+				VariableOwnerClass = Blueprint->SkeletonGeneratedClass;
+				FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable in SkeletonGeneratedClass: %s"), *Blueprint->SkeletonGeneratedClass->GetName());
+			}
+		}
+
+		// If still not found, try searching in parent classes
+		if (!VariableProperty)
+		{
+			UClass* ParentClass = Blueprint->ParentClass;
+			if (ParentClass)
+			{
+				// Search through the class hierarchy
+				for (UClass* Class = ParentClass; Class; Class = Class->GetSuperClass())
+				{
+					VariableProperty = Class->FindPropertyByName(VariableNameAsFName);
+					if (VariableProperty)
+					{
+						VariableOwnerClass = Class;
+						FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable in parent class: %s"), *Class->GetName());
+						break;
+					}
+				}
+			}
+		}
+
+		// If still not found, search through all properties in the Blueprint class hierarchy
+		if (!VariableProperty)
+		{
+			UClass* SearchClass = Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass;
+			if (SearchClass)
+			{
+				// Iterate through all properties, including super class properties
+				for (UClass* Class = SearchClass; Class && !VariableProperty; Class = Class->GetSuperClass())
+				{
+					for (TFieldIterator<FProperty> PropIt(Class); PropIt; ++PropIt)
+					{
+						FProperty* TestProp = *PropIt;
+						if (TestProp && TestProp->GetFName() == VariableNameAsFName)
+						{
+							VariableProperty = TestProp;
+							VariableOwnerClass = Class;
+							FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Found variable via property iteration in class %s: %s"), *Class->GetName(), *TestProp->GetName());
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		if (!VariableProperty || !VariableOwnerClass)
+		{
+			FUnrealGraphLogger::LogFormatted(TEXT("  ✗ ERROR: Could not find variable '%s' in Blueprint '%s'"), *VariableName, Blueprint ? *Blueprint->GetName() : TEXT("None"));
+			UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Could not find variable '%s' in Blueprint"), *VariableName);
+			return false;
+		}
+
+		// Set the VariableReference struct using reflection (same as VariableGet)
+		FStructProperty* VariableRefProp = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("VariableReference")));
+		if (VariableRefProp && VariableRefProp->Struct)
+		{
+			// Get pointer to VariableReference struct
+			void* VariableRefPtr = VariableRefProp->ContainerPtrToValuePtr<void>(Node);
+			if (VariableRefPtr)
+			{
+				// Set MemberName (the variable name)
+				if (FNameProperty* MemberNameProp = CastField<FNameProperty>(VariableRefProp->Struct->FindPropertyByName(TEXT("MemberName"))))
+				{
+					MemberNameProp->SetPropertyValue_InContainer(VariableRefPtr, VariableNameAsFName);
+					FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Set VariableReference.MemberName = %s"), *VariableName);
+				}
+
+				// Set MemberParent (the class that contains the variable)
+				if (FObjectProperty* MemberParentProp = CastField<FObjectProperty>(VariableRefProp->Struct->FindPropertyByName(TEXT("MemberParent"))))
+				{
+					MemberParentProp->SetObjectPropertyValue_InContainer(VariableRefPtr, VariableOwnerClass);
+					FUnrealGraphLogger::LogFormatted(TEXT("  ✓ Set VariableReference.MemberParent = %s"), VariableOwnerClass ? *VariableOwnerClass->GetName() : TEXT("None"));
+				}
+
+				FUnrealGraphLogger::LogFormatted(TEXT("  ✓ SUCCESS: VariableReference configured for variable '%s'"), *VariableName);
+				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Set VariableReference for VariableSet variable '%s' in class '%s'"), *VariableName, VariableOwnerClass ? *VariableOwnerClass->GetName() : TEXT("None"));
+				return true;
+			}
+		}
+
+		FUnrealGraphLogger::Log(TEXT("  ✗ ERROR: Could not set VariableReference property on node"));
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Could not set VariableReference property on VariableSet node"));
+		return false;
 	}
 	else if (NodeType == TEXT("K2Node_Event"))
 	{

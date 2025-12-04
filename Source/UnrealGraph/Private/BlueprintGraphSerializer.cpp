@@ -491,8 +491,8 @@ void FBlueprintGraphSerializer::SerializeNodeProperties(UEdGraphNode* Node, TSha
 		}
 	}
 
-	// Serialize properties for K2Node_VariableGet
-	else if (NodeTypeName == TEXT("K2Node_VariableGet"))
+	// Serialize properties for K2Node_VariableGet and K2Node_VariableSet
+	else if (NodeTypeName == TEXT("K2Node_VariableGet") || NodeTypeName == TEXT("K2Node_VariableSet"))
 	{
 		// Try to get variable reference
 		if (FStructProperty* VariableRefProp = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("VariableReference"))))
