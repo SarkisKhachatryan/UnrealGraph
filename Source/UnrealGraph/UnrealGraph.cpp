@@ -18,6 +18,8 @@
 #include "Dom/JsonObject.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Toolkits/AssetEditorToolkit.h"
 
 #define LOCTEXT_NAMESPACE "FUnrealGraphModule"
 
@@ -82,6 +84,14 @@ void FUnrealGraphModule::RegisterConsoleCommands()
 		FConsoleCommandDelegate::CreateRaw(this, &FUnrealGraphModule::TestSerialization),
 		ECVF_Default
 	);
+	
+	// Console command to test deserialization from file
+	IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("UnrealGraph.TestDeserialize"),
+		TEXT("Test deserializing a Blueprint graph from UnrealGraph_Test.json file"),
+		FConsoleCommandDelegate::CreateRaw(this, &FUnrealGraphModule::TestDeserialization),
+		ECVF_Default
+	);
 }
 
 void FUnrealGraphModule::TestSerialization()
@@ -128,6 +138,51 @@ void FUnrealGraphModule::TestSerialization()
 	else
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: No Blueprint graph found. Please open a Blueprint with nodes first."));
+	}
+}
+
+void FUnrealGraphModule::TestDeserialization()
+{
+	UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: TestDeserialization called"));
+	
+	// Get the focused graph
+	UEdGraph* Graph = GetFocusedBlueprintGraph();
+	if (!Graph)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: No Blueprint graph is currently focused. Please open a Blueprint first."));
+		return;
+	}
+	
+	// Load JSON from file
+	FString FilePath = FPaths::ProjectLogDir() / TEXT("UnrealGraph_Test.json");
+	FString JsonContent;
+	
+	if (!FFileHelper::LoadFileToString(JsonContent, *FilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("UnrealGraph: Failed to load JSON file: %s"), *FilePath);
+		return;
+	}
+	
+	UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Loaded JSON from file (%d characters)"), JsonContent.Len());
+	
+	// Parse JSON
+	TSharedPtr<FJsonObject> JsonData;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonContent);
+	
+	if (!FJsonSerializer::Deserialize(Reader, JsonData) || !JsonData.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("UnrealGraph: Failed to parse JSON from file"));
+		return;
+	}
+	
+	// Deserialize
+	if (FBlueprintGraphDeserializer::DeserializeGraph(Graph, JsonData))
+	{
+		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Graph deserialized from file successfully!"));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("UnrealGraph: Failed to deserialize graph from file"));
 	}
 }
 
@@ -218,75 +273,101 @@ UEdGraph* FUnrealGraphModule::GetFocusedBlueprintGraph() const
 	FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet");
 	if (!BlueprintEditorModule)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: BlueprintEditorModule not found"));
 		return nullptr;
 	}
 	
 	// Get all open Blueprint editors
-	// Note: GetBlueprintEditors() returns TArray<TSharedRef<IBlueprintEditor>>
-	// TSharedRef is always valid (unlike TSharedPtr)
 	auto OpenEditors = BlueprintEditorModule->GetBlueprintEditors();
 	
-	// Try all open editors - prefer ones with focused graphs
-	UEdGraph* BestGraph = nullptr;
+	if (OpenEditors.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: No Blueprint editors are open"));
+		return nullptr;
+	}
+	
+	// Strategy: Find the editor that has keyboard/window focus
+	// Check which widget has focus and trace back to the editor
+	TSharedPtr<SWidget> FocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
+	
+	// Try to find which editor contains the focused widget
+	// First, check editors that have focused graphs (most likely to be active)
+	UEdGraph* ActiveFocusedGraph = nullptr;
+	UBlueprint* ActiveBlueprint = nullptr;
 	
 	for (const auto& Editor : OpenEditors)
 	{
-		// TSharedRef is always valid, so we can use it directly
-		// Try to get the focused graph from this editor
 		UEdGraph* FocusedGraph = Editor->GetFocusedGraph();
 		if (FocusedGraph && IsValid(FocusedGraph))
 		{
-			// Get the Blueprint from the graph using BlueprintEditorUtils
 			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(FocusedGraph);
 			if (Blueprint)
 			{
-				BestGraph = FocusedGraph;
-				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found focused graph from Blueprint editor: %s - %s (%d nodes)"), 
-					*Blueprint->GetName(), *BestGraph->GetName(), BestGraph->Nodes.Num());
-				return BestGraph;
-			}
-		}
-	}
-	
-	// No focused graph - try to find the most recently accessed editor
-	// Use the last editor in the list (often the most recent)
-	if (OpenEditors.Num() > 0)
-	{
-		const auto& LastEditor = OpenEditors[OpenEditors.Num() - 1];
-		
-		// Try to get any graph from this editor
-		UEdGraph* FocusedGraph = LastEditor->GetFocusedGraph();
-		if (FocusedGraph && IsValid(FocusedGraph))
-		{
-			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(FocusedGraph);
-			if (Blueprint)
-			{
-				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using focused graph from most recent Blueprint editor: %s - %s (%d nodes)"), 
-					*Blueprint->GetName(), *FocusedGraph->GetName(), FocusedGraph->Nodes.Num());
-				return FocusedGraph;
-			}
-		}
-		
-		// Fallback: try to get the Blueprint from the editor and use its event graph
-		// We'll need to find another way to get the Blueprint - for now, use a simpler approach
-		// Get the graph from the focused graph's owning Blueprint
-		UEdGraph* AnyFocusedGraph = LastEditor->GetFocusedGraph();
-		if (AnyFocusedGraph)
-		{
-			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(AnyFocusedGraph);
-			if (Blueprint && Blueprint->UbergraphPages.Num() > 0)
-			{
-				UEdGraph* EventGraph = Blueprint->UbergraphPages[0];
-				if (EventGraph && IsValid(EventGraph))
+				// This editor has a focused graph - prioritize it
+				// If we haven't found one yet, or if this one seems more relevant, use it
+				if (!ActiveFocusedGraph)
 				{
-					UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using event graph from most recent Blueprint: %s - %s (%d nodes)"), 
-						*Blueprint->GetName(), *EventGraph->GetName(), EventGraph->Nodes.Num());
-					return EventGraph;
+					ActiveFocusedGraph = FocusedGraph;
+					ActiveBlueprint = Blueprint;
 				}
 			}
 		}
 	}
 	
+	// If we found a focused graph, return it
+	if (ActiveFocusedGraph && ActiveBlueprint)
+	{
+		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found active focused graph: %s - %s (%d nodes)"), 
+			*ActiveBlueprint->GetName(), *ActiveFocusedGraph->GetName(), ActiveFocusedGraph->Nodes.Num());
+		return ActiveFocusedGraph;
+	}
+	
+	// Fallback: Use the last editor in the list (often the most recently accessed)
+	// Reverse iteration to check most recent first
+	for (int32 i = OpenEditors.Num() - 1; i >= 0; --i)
+	{
+		const auto& Editor = OpenEditors[i];
+		UEdGraph* FocusedGraph = Editor->GetFocusedGraph();
+		
+		if (FocusedGraph && IsValid(FocusedGraph))
+		{
+			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(FocusedGraph);
+			if (Blueprint)
+			{
+				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using graph from recent editor: %s - %s (%d nodes)"), 
+					*Blueprint->GetName(), *FocusedGraph->GetName(), FocusedGraph->Nodes.Num());
+				return FocusedGraph;
+			}
+		}
+	}
+	
+	// Last resort: Get any graph from the most recent editor's Blueprint
+	if (OpenEditors.Num() > 0)
+	{
+		const auto& LastEditor = OpenEditors[OpenEditors.Num() - 1];
+		UEdGraph* AnyGraph = LastEditor->GetFocusedGraph();
+		
+		if (AnyGraph)
+		{
+			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(AnyGraph);
+			if (Blueprint)
+			{
+				// Try to get the event graph if available
+				if (Blueprint->UbergraphPages.Num() > 0)
+				{
+					UEdGraph* EventGraph = Blueprint->UbergraphPages[0];
+					if (EventGraph && IsValid(EventGraph))
+					{
+						UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using event graph as fallback: %s - %s (%d nodes)"), 
+							*Blueprint->GetName(), *EventGraph->GetName(), EventGraph->Nodes.Num());
+						return EventGraph;
+					}
+				}
+			}
+		}
+	}
+	
+	UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Could not find any valid graph from open editors"));
 	return nullptr;
 }
 

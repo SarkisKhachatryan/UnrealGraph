@@ -10,6 +10,7 @@
 #include "HAL/Platform.h"
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
+#include "UObject/PropertyAccessUtil.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 
@@ -70,24 +71,66 @@ TSharedPtr<FJsonObject> FBlueprintGraphSerializer::SerializeNode(UEdGraphNode* N
 	NodeObject->SetStringField(TEXT("type"), GetNodeClassName(Node));
 	NodeObject->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 
-	// Position - TODO: Fix NodePos access (temporarily default to 0,0)
-	// NodePos property access varies by UE version - will implement proper solution
+	// Position - Get node position
+	// Note: Node positions in UE5 are stored but may need to be accessed via graph editor
+	// For now, we'll serialize as (0,0) but log that positions need to be fixed
+	// TODO: Access node positions through graph editor view or layout system
 	TSharedPtr<FJsonObject> PositionObject = MakeShareable(new FJsonObject);
 	FVector2D NodePosition(0.0f, 0.0f);
+	
+	// Try accessing NodePos through multiple methods
+	// Method 1: Direct property access via FindPropertyByName
+	if (FProperty* PosProp = Node->GetClass()->FindPropertyByName(TEXT("NodePos")))
+	{
+		if (FStructProperty* StructProp = CastField<FStructProperty>(PosProp))
+		{
+			if (StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
+			{
+				const FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
+				if (PosPtr)
+				{
+					NodePosition = *PosPtr;
+				}
+			}
+		}
+	}
+	
+	// Method 2: Try through base class if not found
+	if (NodePosition.X == 0.0f && NodePosition.Y == 0.0f)
+	{
+		UClass* BaseClass = Node->GetClass()->GetSuperClass();
+		if (BaseClass)
+		{
+			if (FProperty* PosProp = BaseClass->FindPropertyByName(TEXT("NodePos")))
+			{
+				if (FStructProperty* StructProp = CastField<FStructProperty>(PosProp))
+				{
+					if (StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
+					{
+						const FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
+						if (PosPtr)
+						{
+							NodePosition = *PosPtr;
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	// Note: If position is still (0,0), we'll need to access it through graph editor view system
+	// This is a known limitation that will be addressed in a future update
 	PositionObject->SetNumberField(TEXT("x"), static_cast<double>(NodePosition.X));
 	PositionObject->SetNumberField(TEXT("y"), static_cast<double>(NodePosition.Y));
 	NodeObject->SetObjectField(TEXT("position"), PositionObject);
 
-	// Comment - Serialize node comment (NodeComment is FText)
-	// Temporarily skip comment serialization - will fix type conversion later
-	// if (!Node->NodeComment.IsEmpty())
-	// {
-	// 	FString CommentString = Node->NodeComment.ToString();
-	// 	if (!CommentString.IsEmpty())
-	// 	{
-	// 		NodeObject->SetStringField(TEXT("comment"), CommentString);
-	// 	}
-	// }
+	// Comment - Serialize node comment
+	// TODO: Fix NodeComment serialization - FText conversion needs proper API
+	// Comment serialization temporarily disabled due to compilation issues
+	// Will be fixed in a future update once the correct FText API is determined
+
+	// Serialize node-specific properties (function refs, variable refs, etc.)
+	SerializeNodeProperties(Node, NodeObject);
 
 	// Serialize pins
 	TArray<TSharedPtr<FJsonValue>> PinsArray;
@@ -227,6 +270,116 @@ FString FBlueprintGraphSerializer::GetNodeClassName(UEdGraphNode* Node)
 	}
 
 	return Node->GetClass()->GetName();
+}
+
+void FBlueprintGraphSerializer::SerializeNodeProperties(UEdGraphNode* Node, TSharedPtr<FJsonObject>& NodeObject)
+{
+	if (!Node || !NodeObject.IsValid())
+	{
+		return;
+	}
+
+	FString NodeTypeName = GetNodeClassName(Node);
+
+	// Serialize properties for K2Node_CallFunction
+	if (NodeTypeName == TEXT("K2Node_CallFunction"))
+	{
+		// Try to get function reference using reflection
+		if (FObjectProperty* FunctionProp = CastField<FObjectProperty>(Node->GetClass()->FindPropertyByName(TEXT("FunctionReference"))))
+		{
+			// FunctionReference is a struct, need to access it differently
+		}
+		else if (FStructProperty* FunctionRefProp = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("FunctionReference"))))
+		{
+			// Access the function reference struct and extract member name
+			void* FunctionRefPtr = FunctionRefProp->ContainerPtrToValuePtr<void>(Node);
+			if (FunctionRefPtr)
+			{
+				// Try to get MemberName from the struct
+				if (FNameProperty* MemberNameProp = CastField<FNameProperty>(FunctionRefProp->Struct->FindPropertyByName(TEXT("MemberName"))))
+				{
+					FName MemberName = MemberNameProp->GetPropertyValue_InContainer(FunctionRefPtr);
+					if (!MemberName.IsNone())
+					{
+						NodeObject->SetStringField(TEXT("functionName"), MemberName.ToString());
+					}
+				}
+			}
+		}
+	}
+
+	// Serialize properties for K2Node_VariableGet
+	else if (NodeTypeName == TEXT("K2Node_VariableGet"))
+	{
+		// Try to get variable reference
+		if (FStructProperty* VariableRefProp = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("VariableReference"))))
+		{
+			void* VariableRefPtr = VariableRefProp->ContainerPtrToValuePtr<void>(Node);
+			if (VariableRefPtr)
+			{
+				if (FNameProperty* MemberNameProp = CastField<FNameProperty>(VariableRefProp->Struct->FindPropertyByName(TEXT("MemberName"))))
+				{
+					FName MemberName = MemberNameProp->GetPropertyValue_InContainer(VariableRefPtr);
+					if (!MemberName.IsNone())
+					{
+						NodeObject->SetStringField(TEXT("variableName"), MemberName.ToString());
+					}
+				}
+			}
+		}
+	}
+
+	// Serialize properties for K2Node_Event
+	else if (NodeTypeName == TEXT("K2Node_Event"))
+	{
+		// Try EventReference first (for standard events like BeginPlay)
+		FStructProperty* EventRefProp = CastField<FStructProperty>(Node->GetClass()->FindPropertyByName(TEXT("EventReference")));
+		if (EventRefProp && EventRefProp->Struct)
+		{
+			void* EventRefPtr = EventRefProp->ContainerPtrToValuePtr<void>(Node);
+			if (EventRefPtr)
+			{
+				// Get MemberName (event function name)
+				if (FNameProperty* MemberNameProp = CastField<FNameProperty>(EventRefProp->Struct->FindPropertyByName(TEXT("MemberName"))))
+				{
+					FName MemberName = MemberNameProp->GetPropertyValue_InContainer(EventRefPtr);
+					if (!MemberName.IsNone())
+					{
+						NodeObject->SetStringField(TEXT("eventName"), MemberName.ToString());
+						
+						// Get MemberParent (the class containing the event) - important for standard events
+						if (FObjectProperty* MemberParentProp = CastField<FObjectProperty>(EventRefProp->Struct->FindPropertyByName(TEXT("MemberParent"))))
+						{
+							UObject* MemberParent = MemberParentProp->GetObjectPropertyValue_InContainer(EventRefPtr);
+							if (MemberParent)
+							{
+								UClass* ParentClass = Cast<UClass>(MemberParent);
+								if (ParentClass)
+								{
+									NodeObject->SetStringField(TEXT("eventClass"), ParentClass->GetName());
+									NodeObject->SetStringField(TEXT("eventClassPath"), ParentClass->GetPathName());
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		// Fallback: Try CustomFunctionName (for custom events)
+		if (!NodeObject->HasField(TEXT("eventName")))
+		{
+			if (FNameProperty* EventNameProp = CastField<FNameProperty>(Node->GetClass()->FindPropertyByName(TEXT("CustomFunctionName"))))
+			{
+				FName EventName = EventNameProp->GetPropertyValue_InContainer(Node);
+				if (!EventName.IsNone())
+				{
+					NodeObject->SetStringField(TEXT("eventName"), EventName.ToString());
+					NodeObject->SetBoolField(TEXT("isCustomEvent"), true);
+				}
+			}
+		}
+	}
 }
 
 FString FBlueprintGraphSerializer::JsonToString(const TSharedPtr<FJsonObject>& JsonObject, bool bPrettyPrint)

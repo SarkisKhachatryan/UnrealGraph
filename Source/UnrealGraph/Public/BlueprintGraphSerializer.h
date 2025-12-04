@@ -64,5 +64,12 @@ private:
 	 * @return Class name string
 	 */
 	static FString GetNodeClassName(UEdGraphNode* Node);
+
+	/**
+	 * Serialize node-specific properties (function refs, variable refs, etc.)
+	 * @param Node The node to serialize properties for
+	 * @param NodeObject The JSON object to add properties to
+	 */
+	static void SerializeNodeProperties(UEdGraphNode* Node, TSharedPtr<FJsonObject>& NodeObject);
 };
 

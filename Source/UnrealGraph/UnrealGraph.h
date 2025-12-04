@@ -27,6 +27,9 @@ private:
 	
 	/** Test serialization function */
 	void TestSerialization();
+	
+	/** Test deserialization from file */
+	void TestDeserialization();
 
 	/** Register Blueprint editor menus */
 	void RegisterBlueprintEditorMenus();

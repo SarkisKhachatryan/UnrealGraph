@@ -34,9 +34,9 @@ public:
 	 * Create connections from JSON data
 	 * @param Graph The graph containing the nodes
 	 * @param ConnectionsArray The JSON array containing connection data
-	 * @return True if connections were created successfully
+	 * @return Number of successfully created connections
 	 */
-	static bool CreateConnectionsFromJson(UEdGraph* Graph, const TArray<TSharedPtr<FJsonValue>>& ConnectionsArray);
+	static int32 CreateConnectionsFromJson(UEdGraph* Graph, const TArray<TSharedPtr<FJsonValue>>& ConnectionsArray);
 
 	/**
 	 * Validate JSON schema
@@ -61,5 +61,35 @@ private:
 	 * @return The found pin, or nullptr if not found
 	 */
 	static class UEdGraphPin* FindPinByName(UEdGraphNode* Node, const FString& PinName);
+
+	/**
+	 * Map JSON node type name to UClass
+	 * @param NodeTypeName The class name from JSON (e.g., "K2Node_Event")
+	 * @return The UClass for that node type, or nullptr if not found
+	 */
+	static UClass* GetNodeClassFromTypeName(const FString& NodeTypeName);
+
+	/**
+	 * Set node position from JSON data
+	 * @param Node The node to set position for
+	 * @param NodeData The JSON object containing position data
+	 */
+	static void SetNodePosition(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& NodeData);
+
+	/**
+	 * Configure node-specific properties before allocating pins
+	 * @param Node The node to configure
+	 * @param NodeData The JSON object containing node data
+	 * @param Graph The graph the node belongs to
+	 * @return True if configuration succeeded
+	 */
+	static bool ConfigureNodeProperties(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& NodeData, UEdGraph* Graph);
+
+	/**
+	 * Restore pin default values from JSON
+	 * @param Node The node to restore pin values for
+	 * @param NodeData The JSON object containing pin data
+	 */
+	static void RestorePinDefaultValues(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& NodeData);
 };
 
