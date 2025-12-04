@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintGraphDeserializer.h"
+#include "UnrealGraphLogger.h"
 #include "BlueprintGraphJsonSchema.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
@@ -19,6 +20,8 @@
 #include "GameFramework/Actor.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Math/UnrealMathUtility.h"
+#include "Math/UnrealMathUtility.h"
 
 // Static map to track node ID mappings during deserialization
 static TMap<FString, UEdGraphNode*> GNodeIdMap;
@@ -30,12 +33,20 @@ bool FBlueprintGraphDeserializer::DeserializeGraph(UEdGraph* Graph, const TShare
 		return false;
 	}
 
+	// Initialize logger for this deserialization session
+	FUnrealGraphLogger::Initialize(TEXT("UnrealGraph_Deserialization"));
+	FUnrealGraphLogger::LogSection(FString::Printf(TEXT("Deserializing Graph: %s"), *Graph->GetName()));
+
 	// Validate JSON schema
 	if (!ValidateJsonSchema(JsonData))
 	{
+		FUnrealGraphLogger::Log(TEXT("✗ ERROR: Invalid JSON schema"));
+		FUnrealGraphLogger::Shutdown();
 		UE_LOG(LogTemp, Error, TEXT("Invalid JSON schema"));
 		return false;
 	}
+
+	FUnrealGraphLogger::Log(TEXT("✓ JSON schema validated"));
 
 	// Begin transaction for undo/redo support
 	FScopedTransaction Transaction(NSLOCTEXT("UnrealGraph", "PasteGraph", "Paste Graph from JSON"));
@@ -55,24 +66,34 @@ bool FBlueprintGraphDeserializer::DeserializeGraph(UEdGraph* Graph, const TShare
 
 	// Create nodes first
 	const TArray<TSharedPtr<FJsonValue>>* NodesArray;
+	int32 NodesCreated = 0;
 	if (GraphObject->TryGetArrayField(TEXT("nodes"), NodesArray))
 	{
+		FUnrealGraphLogger::LogFormatted(TEXT("Creating %d nodes..."), NodesArray->Num());
 		for (const TSharedPtr<FJsonValue>& NodeValue : *NodesArray)
 		{
 			const TSharedPtr<FJsonObject>* NodeObjectPtr;
 			if (NodeValue->TryGetObject(NodeObjectPtr))
 			{
-				CreateNodeFromJson(Graph, *NodeObjectPtr);
+				UEdGraphNode* CreatedNode = CreateNodeFromJson(Graph, *NodeObjectPtr);
+				if (CreatedNode)
+				{
+					NodesCreated++;
+				}
 			}
 		}
+		FUnrealGraphLogger::LogFormatted(TEXT("✓ Created %d/%d nodes"), NodesCreated, NodesArray ? NodesArray->Num() : 0);
 	}
 
 	// Create connections after all nodes are created
 	const TArray<TSharedPtr<FJsonValue>>* ConnectionsArray;
+	int32 SuccessfulConnections = 0;
 	if (GraphObject->TryGetArrayField(TEXT("connections"), ConnectionsArray))
 	{
+		FUnrealGraphLogger::LogFormatted(TEXT("Creating %d connections..."), ConnectionsArray->Num());
 		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Attempting to create %d connections"), ConnectionsArray->Num());
-		int32 SuccessfulConnections = CreateConnectionsFromJson(Graph, *ConnectionsArray);
+		SuccessfulConnections = CreateConnectionsFromJson(Graph, *ConnectionsArray);
+		FUnrealGraphLogger::LogFormatted(TEXT("✓ Created %d/%d connections"), SuccessfulConnections, ConnectionsArray->Num());
 		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Successfully created %d/%d connections"), SuccessfulConnections, ConnectionsArray->Num());
 	}
 
@@ -85,8 +106,12 @@ bool FBlueprintGraphDeserializer::DeserializeGraph(UEdGraph* Graph, const TShare
 		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Deserialization completed. Created %d nodes"), 
-		NodesArray ? NodesArray->Num() : 0);
+	FUnrealGraphLogger::LogSection(TEXT("Deserialization Complete"));
+	FUnrealGraphLogger::LogFormatted(TEXT("Successfully created %d nodes and %d connections"), 
+		NodesCreated, SuccessfulConnections);
+	FUnrealGraphLogger::Shutdown();
+
+	UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Deserialization completed. Created %d nodes and %d connections"), NodesCreated, SuccessfulConnections);
 
 	return true;
 }
@@ -152,6 +177,7 @@ UEdGraphNode* FBlueprintGraphDeserializer::CreateNodeFromJson(UEdGraph* Graph, c
 	RestorePinDefaultValues(NewNode, NodeData);
 
 	// Set node position (after adding to graph)
+	FUnrealGraphLogger::LogSection(FString::Printf(TEXT("Setting Position for Node: %s"), *NodeId));
 	SetNodePosition(NewNode, NodeData);
 
 	// Post-creation setup - some nodes need this
@@ -397,6 +423,7 @@ void FBlueprintGraphDeserializer::SetNodePosition(UEdGraphNode* Node, const TSha
 	const TSharedPtr<FJsonObject>* PositionObjectPtr;
 	if (!NodeData->TryGetObjectField(TEXT("position"), PositionObjectPtr))
 	{
+		FUnrealGraphLogger::Log(TEXT("  No position data in JSON"));
 		return;
 	}
 
@@ -406,31 +433,92 @@ void FBlueprintGraphDeserializer::SetNodePosition(UEdGraphNode* Node, const TSha
 	PositionObject->TryGetNumberField(TEXT("x"), X);
 	PositionObject->TryGetNumberField(TEXT("y"), Y);
 
-	FVector2D NewPosition(static_cast<float>(X), static_cast<float>(Y));
+	FUnrealGraphLogger::LogFormatted(TEXT("  Position from JSON: (%.1f, %.1f)"), X, Y);
 
-	// Try to set NodePos via reflection (same approach as serializer)
-	FProperty* PosProperty = Node->GetClass()->FindPropertyByName(TEXT("NodePos"));
-	if (!PosProperty)
+	int32 PosX = FMath::RoundToInt(static_cast<float>(X));
+	int32 PosY = FMath::RoundToInt(static_cast<float>(Y));
+
+	bool bPositionSet = false;
+	bool bSetX = false;
+	bool bSetY = false;
+
+	// Based on log analysis: Positions are stored as IntProperty (NodePosX, NodePosY), not Vector2D!
+	// Try to set NodePosX and NodePosY as IntProperty
+	FUnrealGraphLogger::Log(TEXT("  Attempting to set NodePosX (IntProperty)..."));
+	FIntProperty* PosXProp = FindFProperty<FIntProperty>(Node->GetClass(), TEXT("NodePosX"));
+	if (PosXProp)
 	{
-		PosProperty = FindFProperty<FProperty>(Node->GetClass(), TEXT("NodePos"));
+		PosXProp->SetPropertyValue_InContainer(Node, PosX);
+		bSetX = true;
+		bPositionSet = true;
+		FUnrealGraphLogger::LogFormatted(TEXT("    ✓ Set NodePosX to %d"), PosX);
+		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Set NodePosX to %d"), PosX);
+	}
+	else
+	{
+		FUnrealGraphLogger::Log(TEXT("    ✗ NodePosX property not found"));
 	}
 
-	if (PosProperty)
+	FUnrealGraphLogger::Log(TEXT("  Attempting to set NodePosY (IntProperty)..."));
+	FIntProperty* PosYProp = FindFProperty<FIntProperty>(Node->GetClass(), TEXT("NodePosY"));
+	if (PosYProp)
 	{
-		FStructProperty* StructProp = CastField<FStructProperty>(PosProperty);
-		if (StructProp && StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
+		PosYProp->SetPropertyValue_InContainer(Node, PosY);
+		bSetY = true;
+		bPositionSet = true;
+		FUnrealGraphLogger::LogFormatted(TEXT("    ✓ Set NodePosY to %d"), PosY);
+		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Set NodePosY to %d"), PosY);
+	}
+	else
+	{
+		FUnrealGraphLogger::Log(TEXT("    ✗ NodePosY property not found"));
+	}
+
+	// Fallback: Try Vector2D approach (in case some nodes use it)
+	if (!bPositionSet)
+	{
+		FProperty* PosProperty = Node->GetClass()->FindPropertyByName(TEXT("NodePos"));
+		if (!PosProperty)
 		{
-			FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
-			if (PosPtr)
+			PosProperty = FindFProperty<FProperty>(Node->GetClass(), TEXT("NodePos"));
+		}
+
+		if (PosProperty)
+		{
+			FStructProperty* StructProp = CastField<FStructProperty>(PosProperty);
+			if (StructProp && StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
 			{
-				*PosPtr = NewPosition;
-				Node->Modify(); // Mark for undo/redo
+				FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
+				if (PosPtr)
+				{
+					FVector2D NewPosition(static_cast<float>(X), static_cast<float>(Y));
+					*PosPtr = NewPosition;
+					bPositionSet = true;
+					UE_LOG(LogTemp, Verbose, TEXT("UnrealGraph: Set NodePos Vector2D to (%.1f, %.1f)"), NewPosition.X, NewPosition.Y);
+				}
 			}
 		}
 	}
-	
-	// Note: Some nodes may need additional setup or notification after position change
-	// This basic implementation should work for most node types
+
+	if (bPositionSet && bSetX && bSetY)
+	{
+		Node->Modify(); // Mark for undo/redo
+		FUnrealGraphLogger::LogFormatted(TEXT("  ✓ SUCCESS: Position set to (%d, %d)"), PosX, PosY);
+		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Set node position to (%d, %d)"), PosX, PosY);
+	}
+	else if (bPositionSet)
+	{
+		Node->Modify(); // Mark for undo/redo
+		FUnrealGraphLogger::LogFormatted(TEXT("  ⚠ PARTIAL: Position partially set (X: %s, Y: %s)"), 
+			bSetX ? TEXT("Yes") : TEXT("No"), bSetY ? TEXT("Yes") : TEXT("No"));
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Partially set node position (X: %s, Y: %s)"), 
+			bSetX ? TEXT("Yes") : TEXT("No"), bSetY ? TEXT("Yes") : TEXT("No"));
+	}
+	else
+	{
+		FUnrealGraphLogger::LogFormatted(TEXT("  ✗ FAILED: Could not set node position - NodePosX/NodePosY properties not found"));
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Could not set node position - NodePosX/NodePosY properties not found"));
+	}
 }
 
 bool FBlueprintGraphDeserializer::ConfigureNodeProperties(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& NodeData, UEdGraph* Graph)
