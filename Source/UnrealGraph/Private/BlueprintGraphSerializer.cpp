@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintGraphSerializer.h"
+#include "UnrealGraphLogger.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
@@ -20,6 +21,11 @@ TSharedPtr<FJsonObject> FBlueprintGraphSerializer::SerializeGraph(UEdGraph* Grap
 	{
 		return nullptr;
 	}
+
+	// Initialize logger for this serialization session
+	FUnrealGraphLogger::Initialize(TEXT("UnrealGraph_Serialization"));
+	FUnrealGraphLogger::LogSection(FString::Printf(TEXT("Serializing Graph: %s"), *Graph->GetName()));
+	FUnrealGraphLogger::LogFormatted(TEXT("Graph has %d nodes"), Graph->Nodes.Num());
 
 	TSharedPtr<FJsonObject> RootObject = MakeShareable(new FJsonObject);
 
@@ -54,6 +60,11 @@ TSharedPtr<FJsonObject> FBlueprintGraphSerializer::SerializeGraph(UEdGraph* Grap
 
 	RootObject->SetObjectField(TEXT("graph"), GraphObject);
 
+	// Log completion and shutdown logger
+	FUnrealGraphLogger::LogSection(TEXT("Serialization Complete"));
+	FUnrealGraphLogger::LogFormatted(TEXT("Successfully serialized %d nodes and %d connections"), NodesArray.Num(), ConnectionsArray.Num());
+	FUnrealGraphLogger::Shutdown();
+
 	return RootObject;
 }
 
@@ -71,58 +82,230 @@ TSharedPtr<FJsonObject> FBlueprintGraphSerializer::SerializeNode(UEdGraphNode* N
 	NodeObject->SetStringField(TEXT("type"), GetNodeClassName(Node));
 	NodeObject->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 
+	// Log node details for analysis
+	FUnrealGraphLogger::LogNodeDetails(Node);
+
 	// Position - Get node position
-	// Note: Node positions in UE5 are stored but may need to be accessed via graph editor
-	// For now, we'll serialize as (0,0) but log that positions need to be fixed
-	// TODO: Access node positions through graph editor view or layout system
+	FUnrealGraphLogger::LogSection(FString::Printf(TEXT("Position Detection for Node: %s"), *Node->GetName()));
 	TSharedPtr<FJsonObject> PositionObject = MakeShareable(new FJsonObject);
 	FVector2D NodePosition(0.0f, 0.0f);
+	bool bPositionFound = false;
 	
-	// Try accessing NodePos through multiple methods
-	// Method 1: Direct property access via FindPropertyByName
-	if (FProperty* PosProp = Node->GetClass()->FindPropertyByName(TEXT("NodePos")))
+	// Method 1: Try multiple property name variations
+	FUnrealGraphLogger::Log(TEXT("Method 1: Searching for Vector2D position properties..."));
+	const TArray<FName> PositionPropertyNames = {
+		TEXT("NodePos"),
+		TEXT("NodePosition"),
+		TEXT("Position"),
+		TEXT("Pos")
+	};
+	
+	for (const FName& PropName : PositionPropertyNames)
 	{
-		if (FStructProperty* StructProp = CastField<FStructProperty>(PosProp))
+		FUnrealGraphLogger::LogFormatted(TEXT("  Checking property: %s"), *PropName.ToString());
+		
+		// Try in current class
+		if (FProperty* PosProp = Node->GetClass()->FindPropertyByName(PropName))
 		{
-			if (StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
+			FUnrealGraphLogger::LogFormatted(TEXT("    Found property '%s' in class '%s'"), *PropName.ToString(), *Node->GetClass()->GetName());
+			
+			if (FStructProperty* StructProp = CastField<FStructProperty>(PosProp))
 			{
-				const FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
-				if (PosPtr)
+				if (StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
 				{
-					NodePosition = *PosPtr;
+					const FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
+					if (PosPtr)
+					{
+						NodePosition = *PosPtr;
+						bPositionFound = true;
+						FUnrealGraphLogger::LogFormatted(TEXT("    ✓ SUCCESS: Found position via property %s: (%.1f, %.1f)"), 
+							*PropName.ToString(), NodePosition.X, NodePosition.Y);
+						UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found position via property %s: (%.1f, %.1f)"), 
+							*PropName.ToString(), NodePosition.X, NodePosition.Y);
+						break;
+					}
+					else
+					{
+						FUnrealGraphLogger::Log(TEXT("    ✗ Property found but pointer is null"));
+					}
+				}
+				else
+				{
+					FUnrealGraphLogger::LogFormatted(TEXT("    ✗ Property found but not Vector2D type"));
 				}
 			}
 		}
-	}
-	
-	// Method 2: Try through base class if not found
-	if (NodePosition.X == 0.0f && NodePosition.Y == 0.0f)
-	{
-		UClass* BaseClass = Node->GetClass()->GetSuperClass();
-		if (BaseClass)
+		else
 		{
-			if (FProperty* PosProp = BaseClass->FindPropertyByName(TEXT("NodePos")))
+			FUnrealGraphLogger::Log(TEXT("    ✗ Property not found in current class"));
+		}
+		
+		// Try through all base classes
+		if (!bPositionFound)
+		{
+			FUnrealGraphLogger::Log(TEXT("    Checking base classes..."));
+			for (UClass* Class = Node->GetClass(); Class && !bPositionFound; Class = Class->GetSuperClass())
 			{
-				if (FStructProperty* StructProp = CastField<FStructProperty>(PosProp))
+				if (FProperty* PosProp = Class->FindPropertyByName(PropName))
 				{
-					if (StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
+					FUnrealGraphLogger::LogFormatted(TEXT("      Found property '%s' in base class '%s'"), *PropName.ToString(), *Class->GetName());
+					
+					if (FStructProperty* StructProp = CastField<FStructProperty>(PosProp))
 					{
-						const FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
-						if (PosPtr)
+						if (StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
 						{
-							NodePosition = *PosPtr;
+							const FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
+							if (PosPtr)
+							{
+								NodePosition = *PosPtr;
+								bPositionFound = true;
+								FUnrealGraphLogger::LogFormatted(TEXT("      ✓ SUCCESS: Found position via property %s in class %s: (%.1f, %.1f)"), 
+									*PropName.ToString(), *Class->GetName(), NodePosition.X, NodePosition.Y);
+								UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found position via property %s in class %s: (%.1f, %.1f)"), 
+									*PropName.ToString(), *Class->GetName(), NodePosition.X, NodePosition.Y);
+								break;
+							}
 						}
 					}
 				}
 			}
 		}
+		
+		if (bPositionFound)
+		{
+			break;
+		}
 	}
 	
-	// Note: If position is still (0,0), we'll need to access it through graph editor view system
-	// This is a known limitation that will be addressed in a future update
+	// Method 2: Try separate X and Y properties (NodePosX, NodePosY)
+	if (!bPositionFound)
+	{
+		FUnrealGraphLogger::Log(TEXT("Method 2: Searching for separate X/Y position properties..."));
+		float PosX = 0.0f;
+		float PosY = 0.0f;
+		bool bHasX = false;
+		bool bHasY = false;
+		
+		// Try to find NodePosX - NOTE: It's an IntProperty, not FloatProperty!
+		for (const FString& XName : { TEXT("NodePosX"), TEXT("PosX"), TEXT("PositionX") })
+		{
+			// Try IntProperty first (this is what Unreal actually uses!)
+			if (FIntProperty* XProp = FindFProperty<FIntProperty>(Node->GetClass(), *XName))
+			{
+				int32 IntValue = XProp->GetPropertyValue_InContainer(Node);
+				PosX = static_cast<float>(IntValue);
+				bHasX = true;
+				FUnrealGraphLogger::LogFormatted(TEXT("  Found X position via IntProperty %s: %d (%.1f)"), *XName, IntValue, PosX);
+				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found X position via IntProperty %s: %d"), *XName, IntValue);
+				break;
+			}
+			// Fallback to FloatProperty (in case some nodes use it)
+			else if (FFloatProperty* XPropFloat = FindFProperty<FFloatProperty>(Node->GetClass(), *XName))
+			{
+				PosX = XPropFloat->GetPropertyValue_InContainer(Node);
+				bHasX = true;
+				FUnrealGraphLogger::LogFormatted(TEXT("  Found X position via FloatProperty %s: %.1f"), *XName, PosX);
+				break;
+			}
+		}
+		
+		// Try to find NodePosY - NOTE: It's an IntProperty, not FloatProperty!
+		for (const FString& YName : { TEXT("NodePosY"), TEXT("PosY"), TEXT("PositionY") })
+		{
+			// Try IntProperty first (this is what Unreal actually uses!)
+			if (FIntProperty* YProp = FindFProperty<FIntProperty>(Node->GetClass(), *YName))
+			{
+				int32 IntValue = YProp->GetPropertyValue_InContainer(Node);
+				PosY = static_cast<float>(IntValue);
+				bHasY = true;
+				FUnrealGraphLogger::LogFormatted(TEXT("  Found Y position via IntProperty %s: %d (%.1f)"), *YName, IntValue, PosY);
+				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found Y position via IntProperty %s: %d"), *YName, IntValue);
+				break;
+			}
+			// Fallback to FloatProperty (in case some nodes use it)
+			else if (FFloatProperty* YPropFloat = FindFProperty<FFloatProperty>(Node->GetClass(), *YName))
+			{
+				PosY = YPropFloat->GetPropertyValue_InContainer(Node);
+				bHasY = true;
+				FUnrealGraphLogger::LogFormatted(TEXT("  Found Y position via FloatProperty %s: %.1f"), *YName, PosY);
+				break;
+			}
+		}
+		
+		if (bHasX && bHasY)
+		{
+			NodePosition = FVector2D(PosX, PosY);
+			bPositionFound = true;
+			UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found position via separate X/Y properties: (%.1f, %.1f)"), 
+				NodePosition.X, NodePosition.Y);
+		}
+	}
+	
+	// Method 3: Iterate through all properties to find any Vector2D
+	if (!bPositionFound)
+	{
+		FUnrealGraphLogger::Log(TEXT("Method 3: Iterating through all properties to find Vector2D..."));
+		int32 Vector2DCount = 0;
+		
+		for (TFieldIterator<FProperty> PropIt(Node->GetClass()); PropIt && !bPositionFound; ++PropIt)
+		{
+			FProperty* Prop = *PropIt;
+			if (FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+			{
+				if (StructProp->Struct && StructProp->Struct->GetFName() == NAME_Vector2D)
+				{
+					Vector2DCount++;
+					FName PropName = Prop->GetFName();
+					FString PropNameStr = PropName.ToString();
+					
+					FUnrealGraphLogger::LogFormatted(TEXT("  Found Vector2D property: %s"), *PropNameStr);
+					
+					if (PropNameStr.Contains(TEXT("Pos")) || PropNameStr.Contains(TEXT("Position")))
+					{
+						const FVector2D* PosPtr = StructProp->ContainerPtrToValuePtr<FVector2D>(Node);
+						if (PosPtr)
+						{
+							FUnrealGraphLogger::LogFormatted(TEXT("    Property value: (%.1f, %.1f)"), PosPtr->X, PosPtr->Y);
+							
+							if (PosPtr->X != 0.0f || PosPtr->Y != 0.0f)
+							{
+								NodePosition = *PosPtr;
+								bPositionFound = true;
+								FUnrealGraphLogger::LogFormatted(TEXT("    ✓ SUCCESS: Found position via property iteration: %s = (%.1f, %.1f)"), 
+									*PropNameStr, NodePosition.X, NodePosition.Y);
+								UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found position via property iteration: %s = (%.1f, %.1f)"), 
+									*PropNameStr, NodePosition.X, NodePosition.Y);
+								break;
+							}
+							else
+							{
+								FUnrealGraphLogger::Log(TEXT("    ✗ Position is (0,0) - skipping"));
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		FUnrealGraphLogger::LogFormatted(TEXT("  Total Vector2D properties found: %d"), Vector2DCount);
+	}
+	
+	// Serialize position (even if (0,0) - deserialization can still use it)
 	PositionObject->SetNumberField(TEXT("x"), static_cast<double>(NodePosition.X));
 	PositionObject->SetNumberField(TEXT("y"), static_cast<double>(NodePosition.Y));
 	NodeObject->SetObjectField(TEXT("position"), PositionObject);
+	
+	if (!bPositionFound && NodePosition.X == 0.0f && NodePosition.Y == 0.0f)
+	{
+		FUnrealGraphLogger::Log(TEXT("✗ FAILED: Node position not found, serializing as (0,0)"));
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: Node position not found for %s, serializing as (0,0)"), *Node->GetName());
+	}
+	else if (bPositionFound)
+	{
+		FUnrealGraphLogger::LogFormatted(TEXT("✓ SUCCESS: Final position: (%.1f, %.1f)"), NodePosition.X, NodePosition.Y);
+		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Serializing node %s position: (%.1f, %.1f)"), 
+			*Node->GetName(), NodePosition.X, NodePosition.Y);
+	}
 
 	// Comment - Serialize node comment
 	// TODO: Fix NodeComment serialization - FText conversion needs proper API
