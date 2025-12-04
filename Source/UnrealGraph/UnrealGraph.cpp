@@ -20,6 +20,10 @@
 #include "Misc/Paths.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Toolkits/AssetEditorToolkit.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "BlueprintEditor.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "FUnrealGraphModule"
 
@@ -269,99 +273,113 @@ void FUnrealGraphModule::OnPasteFromJSON()
 
 UEdGraph* FUnrealGraphModule::GetFocusedBlueprintGraph() const
 {
-	// Try to get the graph from the currently active Blueprint editor
-	FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet");
-	if (!BlueprintEditorModule)
+	// Use AssetEditorSubsystem to find the currently active (foreground) Blueprint editor
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (!AssetEditorSubsystem)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: BlueprintEditorModule not found"));
+		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: AssetEditorSubsystem not found"));
 		return nullptr;
 	}
+
+	// Get all currently edited assets
+	TArray<UObject*> EditedAssets = AssetEditorSubsystem->GetAllEditedAssets();
 	
-	// Get all open Blueprint editors
-	auto OpenEditors = BlueprintEditorModule->GetBlueprintEditors();
+	// Find the active Blueprint editor by checking which tab is in the foreground
+	FBlueprintEditor* ActiveBlueprintEditor = nullptr;
 	
-	if (OpenEditors.Num() == 0)
+	for (UObject* Asset : EditedAssets)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealGraph: No Blueprint editors are open"));
-		return nullptr;
-	}
-	
-	// Strategy: Find the editor that has keyboard/window focus
-	// Check which widget has focus and trace back to the editor
-	TSharedPtr<SWidget> FocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
-	
-	// Try to find which editor contains the focused widget
-	// First, check editors that have focused graphs (most likely to be active)
-	UEdGraph* ActiveFocusedGraph = nullptr;
-	UBlueprint* ActiveBlueprint = nullptr;
-	
-	for (const auto& Editor : OpenEditors)
-	{
-		UEdGraph* FocusedGraph = Editor->GetFocusedGraph();
-		if (FocusedGraph && IsValid(FocusedGraph))
+		if (!Asset || !Asset->IsA<UBlueprint>())
 		{
-			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(FocusedGraph);
-			if (Blueprint)
+			continue;
+		}
+		
+		UBlueprint* Blueprint = Cast<UBlueprint>(Asset);
+		if (!Blueprint)
+		{
+			continue;
+		}
+		
+		// Get the asset editor instance for this Blueprint
+		IAssetEditorInstance* EditorInstance = AssetEditorSubsystem->FindEditorForAsset(Asset, false);
+		if (!EditorInstance)
+		{
+			continue;
+		}
+		
+		// Cast to FAssetEditorToolkit to access tab manager
+		FAssetEditorToolkit* AssetEditorToolkit = static_cast<FAssetEditorToolkit*>(EditorInstance);
+		if (!AssetEditorToolkit)
+		{
+			continue;
+		}
+		
+		// Check if this editor's tab is in the foreground (active)
+		TSharedPtr<SDockTab> OwnerTab = AssetEditorToolkit->GetTabManager()->GetOwnerTab();
+		if (OwnerTab.IsValid() && OwnerTab->IsForeground())
+		{
+			// This is the active editor! Try to cast to FBlueprintEditor
+			FBlueprintEditor* BlueprintEditor = static_cast<FBlueprintEditor*>(AssetEditorToolkit);
+			if (BlueprintEditor)
 			{
-				// This editor has a focused graph - prioritize it
-				// If we haven't found one yet, or if this one seems more relevant, use it
-				if (!ActiveFocusedGraph)
-				{
-					ActiveFocusedGraph = FocusedGraph;
-					ActiveBlueprint = Blueprint;
-				}
+				ActiveBlueprintEditor = BlueprintEditor;
+				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found active Blueprint editor tab: %s"), *Blueprint->GetName());
+				break;
 			}
 		}
 	}
 	
-	// If we found a focused graph, return it
-	if (ActiveFocusedGraph && ActiveBlueprint)
+	// If we found the active Blueprint editor, get its focused graph
+	if (ActiveBlueprintEditor)
 	{
-		UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Found active focused graph: %s - %s (%d nodes)"), 
-			*ActiveBlueprint->GetName(), *ActiveFocusedGraph->GetName(), ActiveFocusedGraph->Nodes.Num());
-		return ActiveFocusedGraph;
-	}
-	
-	// Fallback: Use the last editor in the list (often the most recently accessed)
-	// Reverse iteration to check most recent first
-	for (int32 i = OpenEditors.Num() - 1; i >= 0; --i)
-	{
-		const auto& Editor = OpenEditors[i];
-		UEdGraph* FocusedGraph = Editor->GetFocusedGraph();
-		
+		UEdGraph* FocusedGraph = ActiveBlueprintEditor->GetFocusedGraph();
 		if (FocusedGraph && IsValid(FocusedGraph))
 		{
 			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(FocusedGraph);
 			if (Blueprint)
 			{
-				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using graph from recent editor: %s - %s (%d nodes)"), 
+				UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using active focused graph: %s - %s (%d nodes)"), 
 					*Blueprint->GetName(), *FocusedGraph->GetName(), FocusedGraph->Nodes.Num());
 				return FocusedGraph;
 			}
 		}
 	}
 	
-	// Last resort: Get any graph from the most recent editor's Blueprint
-	if (OpenEditors.Num() > 0)
+	// Fallback: Use the old method if we couldn't find an active tab
+	FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet");
+	if (BlueprintEditorModule)
 	{
-		const auto& LastEditor = OpenEditors[OpenEditors.Num() - 1];
-		UEdGraph* AnyGraph = LastEditor->GetFocusedGraph();
+		auto OpenEditors = BlueprintEditorModule->GetBlueprintEditors();
 		
-		if (AnyGraph)
+		if (OpenEditors.Num() > 0)
 		{
-			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(AnyGraph);
-			if (Blueprint)
+			// Try to find editors with focused graphs
+			for (const auto& Editor : OpenEditors)
 			{
-				// Try to get the event graph if available
-				if (Blueprint->UbergraphPages.Num() > 0)
+				UEdGraph* FocusedGraph = Editor->GetFocusedGraph();
+				if (FocusedGraph && IsValid(FocusedGraph))
 				{
-					UEdGraph* EventGraph = Blueprint->UbergraphPages[0];
-					if (EventGraph && IsValid(EventGraph))
+					UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(FocusedGraph);
+					if (Blueprint)
 					{
-						UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using event graph as fallback: %s - %s (%d nodes)"), 
-							*Blueprint->GetName(), *EventGraph->GetName(), EventGraph->Nodes.Num());
-						return EventGraph;
+						UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using fallback focused graph: %s - %s (%d nodes)"), 
+							*Blueprint->GetName(), *FocusedGraph->GetName(), FocusedGraph->Nodes.Num());
+						return FocusedGraph;
 					}
+				}
+			}
+			
+			// Last resort: Use the most recent editor's focused graph
+			const auto& LastEditor = OpenEditors[OpenEditors.Num() - 1];
+			UEdGraph* LastFocusedGraph = LastEditor->GetFocusedGraph();
+			if (LastFocusedGraph && IsValid(LastFocusedGraph))
+			{
+				UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(LastFocusedGraph);
+				if (Blueprint)
+				{
+					UE_LOG(LogTemp, Log, TEXT("UnrealGraph: Using most recent editor's graph: %s - %s (%d nodes)"), 
+						*Blueprint->GetName(), *LastFocusedGraph->GetName(), LastFocusedGraph->Nodes.Num());
+					return LastFocusedGraph;
 				}
 			}
 		}
